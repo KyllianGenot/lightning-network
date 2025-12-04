@@ -1,0 +1,22 @@
+# Rust / Cargo
+target/
+**/target/
+
+# Build / binary outputs
+*.rlib
+*.rmeta
+
+# Logs
+*.log
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Cursor / IDE metadata
+.cursor/
+
+# Environment variables
+.env
+.env.*
