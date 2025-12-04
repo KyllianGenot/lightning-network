@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 // ============================================================================
 
 const DEFAULT_RPC_PATH: &str = "/tmp/lightning-rpc";
-const DEFAULT_HOST: &str = "0.0.0.0";
+const DEFAULT_HOST: &str = "192.168.27.70";
 const DEFAULT_PORT: u16 = 3000;
 
 const TAG_CHANNEL_REQUEST: &str = "channelRequest";
@@ -87,7 +87,7 @@ impl Config {
 // Query Parameters
 // ============================================================================
 
-/// Parameters for the open-channel endpoint.
+/// Parameters for the open_channel endpoint.
 #[derive(Debug, Deserialize)]
 struct OpenChannelParams {
     /// Remote node's public key.
@@ -207,6 +207,7 @@ impl WithdrawResponse {
 
 /// Returns channel request metadata for LNURL-channel protocol.
 async fn handle_channel_request() -> Json<ChannelRequestResponse> {
+    info!("Handling channel request");
     // TODO: Generate secure random k1 token and store for validation
     let k1 = generate_k1_token();
 
@@ -418,9 +419,9 @@ async fn main() {
 
     // Build router
     let app = Router::new()
-        .route("/channel-request", get(handle_channel_request))
-        .route("/open-channel", get(handle_open_channel))
-        .route("/withdraw-request", get(handle_withdraw_request))
+        .route("/channel_request", get(handle_channel_request))
+        .route("/open_channel", get(handle_open_channel))
+        .route("/withdraw_request", get(handle_withdraw_request))
         .route("/withdraw", get(handle_withdraw))
         .with_state(state);
 

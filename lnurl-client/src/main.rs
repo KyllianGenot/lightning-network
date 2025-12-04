@@ -222,7 +222,7 @@ async fn handle_channel_request(server: &str, cli_path: &str, network: Option<&s
 
     // Step 1: Get channel request info
     info!(server, "Requesting channel info");
-    let url = format!("{base_url}/channel-request");
+    let url = format!("{base_url}/channel_request");
     let response: ChannelRequestResponse = client
         .get(&url)
         .send()
@@ -243,7 +243,7 @@ async fn handle_channel_request(server: &str, cli_path: &str, network: Option<&s
 
     // Step 4: Request channel opening
     info!("Requesting channel open");
-    let open_url = format!("{base_url}/open-channel?remoteid={local_node_id}&k1={}", response.k1);
+    let open_url = format!("{base_url}/open_channel?remoteid={local_node_id}&k1={}", response.k1);
 
     let open_response: ChannelOpenResponse = client
         .get(&open_url)
@@ -284,7 +284,7 @@ async fn handle_withdraw_request(
 
     // Step 1: Get withdrawal request info
     info!(server, "Requesting withdrawal info");
-    let url = format!("{base_url}/withdraw-request");
+    let url = format!("{base_url}/withdraw_request");
     let response: WithdrawRequestResponse = client
         .get(&url)
         .send()
