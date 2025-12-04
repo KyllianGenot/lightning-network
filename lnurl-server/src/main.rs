@@ -1,7 +1,7 @@
-//! LNURL server for Lightning Network channel requests and withdrawals.
+//! LNURL server for channel and withdraw protocols.
 //!
-//! This server implements LNURL-channel and LNURL-withdraw protocols,
-//! communicating with a Core Lightning node via cln-rpc.
+//! Implements LNURL-channel and LNURL-withdraw protocols,
+//! communicating with a Core Lightning node via `cln-rpc`.
 
 use std::env;
 use std::sync::Arc;

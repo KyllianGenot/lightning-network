@@ -1,7 +1,7 @@
-//! LNURL client for Lightning Network channel requests and withdrawals.
+//! CLI for LNURL channel and withdraw protocols.
 //!
-//! This client implements LNURL-channel and LNURL-withdraw protocols,
-//! communicating with a Core Lightning node via lightning-cli.
+//! Implements LNURL-channel and LNURL-withdraw protocols,
+//! communicating with a Core Lightning node via `lightning-cli`.
 
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};

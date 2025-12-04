@@ -1,7 +1,8 @@
 [package]
-name = "lightning-server"
+name = "lnurl-server"
 version = "0.1.0"
 edition = "2024"
+description = "LNURL server for channel and withdraw protocols"
 
 [dependencies]
 axum = "0.8"

@@ -1,7 +1,8 @@
 [package]
-name = "lightning-client"
+name = "lnurl-client"
 version = "0.1.0"
 edition = "2024"
+description = "CLI for LNURL channel and withdraw protocols"
 
 [dependencies]
 anyhow = "1"
