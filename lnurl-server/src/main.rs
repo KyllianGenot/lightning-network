@@ -12,6 +12,8 @@ use uuid::Uuid;
 use std::sync::{Arc, OnceLock};
 use std::collections::HashSet;
 use tokio::sync::Mutex;
+use secp256k1::{Secp256k1, Message, PublicKey};
+use rand::RngCore;
 
 type SharedClient = Arc<Mutex<cln_rpc::ClnRpc>>;
 type SharedK1Store = Arc<Mutex<HashSet<String>>>;
@@ -24,6 +26,7 @@ struct AppState {
 
 const REQUESTCHANNELTAG: &str = "channelRequest";
 const WITHDRAWCHANNELTAG: &str = "withdrawRequest";
+const LOGINTAG: &str = "login";
 const DEFAULT_DESCRIPTION: &str = "Withdrawal from service";
 const IP_ADDRESS: &str = "192.168.27.70:49735";
 const CALLBACK_URL: &str = "http://192.168.27.70:3000/";
@@ -68,6 +71,10 @@ struct OpenChannelParams {
     k1: String,
     #[serde(default)]
     private: Option<bool>,
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
 }
 
 #[derive(Serialize, Default)]
@@ -126,6 +133,28 @@ async fn open_channel(
 
     let amount = AmountOrAll::Amount(Amount::from_sat(100_000));
     let announce = params.private;
+
+    let mut client_guard = state.client.lock().await;
+
+    // Connect to peer first if address provided
+    if let (Some(ip), Some(port)) = (&params.ip, params.port) {
+        println!("Connecting to peer {}@{}:{}...", params.remoteid, ip, port);
+        let connect_request = cln_rpc::model::requests::ConnectRequest {
+            id: params.remoteid.clone(),
+            host: Some(ip.clone()),
+            port: Some(port),
+        };
+        match client_guard.call(cln_rpc::Request::Connect(connect_request)).await {
+            Ok(_) => println!("Connected to peer"),
+            Err(e) => {
+                // Ignore "already connected" errors
+                let err_str = format!("{}", e);
+                if !err_str.contains("already connected") {
+                    println!("Connect warning: {}", e);
+                }
+            }
+        }
+    }
     
     let request = FundchannelRequest {
         id: node_id,
@@ -301,6 +330,196 @@ async fn withdraw(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct LoginResponse {
+    tag: &'static str,
+    k1: String,
+}
+
+async fn login(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<LoginResponse>) {
+    println!("Login request received");
+    
+    // Generate 32 random bytes for k1
+    let mut k1_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut k1_bytes);
+    let k1 = hex::encode(k1_bytes);
+    
+    // Store k1 in HashSet
+    {
+        let mut k1_store = state.k1_store.lock().await;
+        k1_store.insert(k1.clone());
+    }
+    
+    let response = LoginResponse {
+        tag: LOGINTAG,
+        k1,
+    };
+
+    println!("Login response: {:?}", response);
+
+    (StatusCode::OK, Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyAuthParams {
+    k1: String,
+    sig: String,
+    key: String,
+}
+
+#[derive(Serialize, Default)]
+struct VerifyAuthResponse {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+async fn verify_auth(
+    State(state): State<AppState>,
+    Query(params): Query<VerifyAuthParams>,
+) -> (StatusCode, Json<VerifyAuthResponse>) {
+    println!("Verify auth request received");
+    println!("Params: {:?}", params);
+    
+    // Check if k1 exists in HashSet
+    let k1_valid = {
+        let k1_store = state.k1_store.lock().await;
+        k1_store.contains(&params.k1)
+    };
+    
+    if !k1_valid {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(VerifyAuthResponse {
+                status: "ERROR".to_string(),
+                reason: Some("Invalid k1".to_string()),
+            }),
+        );
+    }
+
+    // Decode k1 from hex
+    let k1_bytes = match hex::decode(&params.k1) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(VerifyAuthResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Invalid k1 hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Decode public key from hex
+    let pubkey = match hex::decode(&params.key) {
+        Ok(bytes) => {
+            match PublicKey::from_slice(&bytes) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(VerifyAuthResponse {
+                            status: "ERROR".to_string(),
+                            reason: Some(format!("Invalid public key: {}", e)),
+                        }),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(VerifyAuthResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Invalid key hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Decode signature from hex (DER encoded)
+    let signature = match hex::decode(&params.sig) {
+        Ok(bytes) => {
+            match secp256k1::ecdsa::Signature::from_der(&bytes) {
+                Ok(sig) => sig,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(VerifyAuthResponse {
+                            status: "ERROR".to_string(),
+                            reason: Some(format!("Invalid signature: {}", e)),
+                        }),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(VerifyAuthResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Invalid sig hex: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Create message from k1 bytes
+    if k1_bytes.len() != 32 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(VerifyAuthResponse {
+                status: "ERROR".to_string(),
+                reason: Some("k1 must be exactly 32 bytes".to_string()),
+            }),
+        );
+    }
+    let message = match Message::from_slice(&k1_bytes) {
+        Ok(msg) => msg,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(VerifyAuthResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Invalid message: {}", e)),
+                }),
+            );
+        }
+    };
+
+    // Verify signature
+    let secp = Secp256k1::verification_only();
+    match secp.verify_ecdsa(&message, &signature, &pubkey) {
+        Ok(_) => {
+            // Remove k1 from store after successful auth
+            {
+                let mut k1_store = state.k1_store.lock().await;
+                k1_store.remove(&params.k1);
+            }
+            println!("Auth successful for key: {}", params.key);
+            (
+                StatusCode::OK,
+                Json(VerifyAuthResponse {
+                    status: "OK".to_string(),
+                    reason: None,
+                }),
+            )
+        }
+        Err(e) => {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(VerifyAuthResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Signature verification failed: {}", e)),
+                }),
+            )
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let client = match cln_rpc::ClnRpc::new("/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc").await {
@@ -345,6 +564,8 @@ async fn main() {
         .route("/open-channel", get(open_channel))
         .route("/request-withdraw", get(request_withdraw))
         .route("/withdraw", get(withdraw))
+        .route("/login", get(login))
+        .route("/verify-auth", get(verify_auth))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

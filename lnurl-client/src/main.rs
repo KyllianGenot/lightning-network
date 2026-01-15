@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
-use secp256k1::PublicKey;
+use secp256k1::{PublicKey, Secp256k1, SecretKey, Message};
 
 const CLN_RPC_PATH: &str = "/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc";
 
@@ -17,13 +17,17 @@ enum Commands {
     RequestWithdraw {
         url: Url,
         amount: u32,
-    }
+    },
+    RequestAuth {
+        url: Url,
+    },
 }
 
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  lnurl-client request-channel <url|ip>");
     eprintln!("  lnurl-client request-withdraw <url|ip> <amount_msat>");
+    eprintln!("  lnurl-client request-auth <url|ip>");
 }
 
 fn parse_url_or_ip(input: &str) -> Result<Url> {
@@ -110,6 +114,19 @@ fn parse_args() -> Result<Commands> {
                 amount,
             })
         },
+        "request-auth" => {
+            if args.len() < 3 {
+                return Err(anyhow!("request-auth requires a <url> argument"));
+            } else if args.len() > 3 {
+                return Err(anyhow!("request-auth does not accept additional arguments"));
+            }
+            
+            let url = parse_url_or_ip(&args[2])?;
+
+            Ok(Commands::RequestAuth {
+                url,
+            })
+        },
         _ => {
             print_usage();
             Err(anyhow!("Unknown command: {}", command_name))
@@ -191,6 +208,18 @@ struct WithdrawResponse {
     reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LoginResponse {
+    tag: String,
+    k1: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyAuthResponse {
+    status: String,
+    reason: Option<String>,
+}
+
 fn channel_request(url: &Url) -> Result<()> {
     println!("Requesting channel info from {}...", url);
 
@@ -217,11 +246,17 @@ fn channel_request(url: &Url) -> Result<()> {
     println!("Requesting channel open...");
     
     let _ = node_uri.split_off(secp256k1::constants::PUBLIC_KEY_SIZE * 2); // it will panic if the string is less than 33 bytes long
+    
+    // Get our listening address to send to server
+    let (our_ip, our_port) = ("192.168.27.70", 49735);  // Our VPN IP and lightning port
+    
     let open_url = format!(
-        "{}?remoteid={}&k1={}",
+        "{}?remoteid={}&k1={}&ip={}&port={}",
         resp.callback,
         node_uri,
-        resp.k1
+        resp.k1,
+        our_ip,
+        our_port
     );
     println!("Open URL: {}", open_url);
     
@@ -328,6 +363,85 @@ fn withdraw_request(url: &Url, amount: u32) -> Result<()> {
     Ok(())
 }
 
+fn auth_request(url: &Url) -> Result<()> {
+    println!("Requesting auth info from {}...", url);
+
+    let request_url = format!("{}/login", url.as_str().trim_end_matches('/'));
+    let resp: LoginResponse = ureq::get(&request_url).call()?.into_json()?;
+
+    println!("Received login challenge:");
+    println!("  Tag: {}", resp.tag);
+    println!("  k1: {}", resp.k1);
+
+    // Decode k1 from hex
+    let k1_bytes = hex::decode(&resp.k1)
+        .context("Failed to decode k1 hex")?;
+    
+    if k1_bytes.len() != 32 {
+        return Err(anyhow!("Invalid k1 length: expected 32 bytes, got {}", k1_bytes.len()));
+    }
+
+    // Generate a linking key (in production, this would be derived from seed)
+    // For simplicity, we use a deterministic key based on the domain
+    let secp = Secp256k1::new();
+    
+    // Create a simple deterministic secret key for demo purposes
+    // In real implementation, this would be derived from wallet seed + domain
+    let mut seed = [0u8; 32];
+    let domain_bytes = url.host_str().unwrap_or("localhost").as_bytes();
+    for (i, byte) in domain_bytes.iter().enumerate() {
+        seed[i % 32] ^= byte;
+    }
+    // Make sure the seed is valid for secp256k1
+    seed[0] = seed[0].saturating_add(1);
+    
+    let secret_key = SecretKey::from_slice(&seed)
+        .context("Failed to create secret key")?;
+    let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+
+    println!("Using linking key: {}", hex::encode(public_key.serialize()));
+
+    // Create message from k1 bytes and sign it
+    let k1_array: [u8; 32] = k1_bytes.try_into()
+        .map_err(|_| anyhow!("k1 must be exactly 32 bytes"))?;
+    let message = Message::from_slice(&k1_array)
+        .context("Failed to create message from k1")?;
+    
+    let signature = secp.sign_ecdsa(&message, &secret_key);
+    let sig_der = signature.serialize_der();
+
+    println!("Signature created: {}", hex::encode(&sig_der));
+
+    // Send verification request
+    let verify_url = format!(
+        "{}/verify-auth?k1={}&sig={}&key={}",
+        url.as_str().trim_end_matches('/'),
+        resp.k1,
+        hex::encode(&sig_der),
+        hex::encode(public_key.serialize())
+    );
+    println!("Verify URL: {}", verify_url);
+
+    let verify_resp = match ureq::get(&verify_url).call() {
+        Ok(resp) => resp.into_json::<VerifyAuthResponse>()?,
+        Err(e) => {
+            return Err(anyhow!("Failed to verify auth: {}", e));
+        }
+    };
+    println!("Verify response: {:?}", verify_resp);
+
+    if verify_resp.status == "OK" {
+        println!("Authentication successful!");
+    } else {
+        if let Some(reason) = verify_resp.reason {
+            return Err(anyhow!("Authentication failed: {}", reason));
+        }
+        return Err(anyhow!("Authentication failed"));
+    }
+
+    Ok(())
+}
+
 fn main() {
     let command = match parse_args() {
         Ok(command) => command,
@@ -344,6 +458,9 @@ fn main() {
         }
         Commands::RequestWithdraw { url, amount } => {
             withdraw_request(&url, amount)
+        }
+        Commands::RequestAuth { url } => {
+            auth_request(&url)
         }
     };
 
