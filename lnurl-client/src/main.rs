@@ -22,7 +22,8 @@ enum Commands {
 
 fn print_usage() {
     eprintln!("Usage:");
-    eprintln!("  lnurl-client request-channel <url|ip> ");
+    eprintln!("  lnurl-client request-channel <url|ip>");
+    eprintln!("  lnurl-client request-withdraw <url|ip> <amount_msat>");
 }
 
 fn parse_url_or_ip(input: &str) -> Result<Url> {
@@ -173,6 +174,23 @@ struct ChannelOpenResponse {
     channel_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WithdrawRequestResponse {
+    callback: String,
+    k1: String,
+    tag: String,
+    default_description: String,
+    min_withdrawable: u64,
+    max_withdrawable: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WithdrawResponse {
+    status: String,
+    reason: Option<String>,
+}
+
 fn channel_request(url: &Url) -> Result<()> {
     println!("Requesting channel info from {}...", url);
 
@@ -227,7 +245,87 @@ fn channel_request(url: &Url) -> Result<()> {
 }
 
 fn withdraw_request(url: &Url, amount: u32) -> Result<()> {
-    unimplemented!()
+    println!("Requesting withdraw info from {}...", url);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .context("Failed to create Tokio runtime")?;
+    let mut ln_client = rt.block_on(cln_rpc::ClnRpc::new(CLN_RPC_PATH))?;
+
+    let request_url = format!("{}/request-withdraw", url.as_str().trim_end_matches('/'));
+    let resp: WithdrawRequestResponse = ureq::get(&request_url).call()?.into_json()?;
+
+    println!("Received withdraw request:");
+    println!("  Callback: {}", resp.callback);
+    println!("  k1: {}", resp.k1);
+    println!("  Min withdrawable: {} msat", resp.min_withdrawable);
+    println!("  Max withdrawable: {} msat", resp.max_withdrawable);
+
+    let amount_msat = amount as u64;
+    if amount_msat < resp.min_withdrawable {
+        return Err(anyhow!("Amount {} msat is below minimum {} msat", amount_msat, resp.min_withdrawable));
+    }
+    if amount_msat > resp.max_withdrawable {
+        return Err(anyhow!("Amount {} msat exceeds maximum {} msat", amount_msat, resp.max_withdrawable));
+    }
+
+    println!("Creating invoice for {} msat...", amount_msat);
+
+    let invoice_request = cln_rpc::model::requests::InvoiceRequest {
+        amount_msat: cln_rpc::primitives::AmountOrAny::Amount(cln_rpc::primitives::Amount::from_msat(amount_msat)),
+        label: format!("lnurl-withdraw-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+        description: resp.default_description.clone(),
+        expiry: None,
+        fallbacks: None,
+        preimage: None,
+        cltv: None,
+        deschashonly: None,
+        exposeprivatechannels: None,
+    };
+
+    let invoice_response = rt.block_on(ln_client.call(cln_rpc::Request::Invoice(invoice_request)));
+    let bolt11 = match invoice_response {
+        Ok(cln_rpc::model::Response::Invoice(response)) => {
+            println!("Invoice created: {}", response.bolt11);
+            response.bolt11
+        }
+        Err(e) => {
+            return Err(anyhow!("Failed to create invoice: {}", e));
+        }
+        _ => {
+            return Err(anyhow!("Unexpected response type"));
+        }
+    };
+
+    println!("Requesting withdrawal...");
+
+    let withdraw_url = format!(
+        "{}?k1={}&pr={}",
+        resp.callback,
+        resp.k1,
+        bolt11
+    );
+    println!("Withdraw URL: {}", withdraw_url);
+
+    let withdraw_resp = match ureq::get(&withdraw_url).call() {
+        Ok(resp) => resp.into_json::<WithdrawResponse>()?,
+        Err(e) => {
+            return Err(anyhow!("Failed to withdraw: {}", e));
+        }
+    };
+    println!("Withdraw response: {:?}", withdraw_resp);
+
+    if withdraw_resp.status == "OK" {
+        println!("Withdrawal successful!");
+    } else {
+        if let Some(reason) = withdraw_resp.reason {
+            return Err(anyhow!("Withdrawal failed: {}", reason));
+        }
+        return Err(anyhow!("Withdrawal failed"));
+    }
+
+    Ok(())
 }
 
 fn main() {
@@ -247,7 +345,6 @@ fn main() {
         Commands::RequestWithdraw { url, amount } => {
             withdraw_request(&url, amount)
         }
-        _ => unreachable!()
     };
 
     if let Err(e) = result {

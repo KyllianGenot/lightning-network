@@ -5,11 +5,11 @@ use axum::{
     extract::{Query, State},
 };
 use cln_rpc::{self, primitives::Sha256};
-use cln_rpc::model::requests::FundchannelRequest;
+use cln_rpc::model::requests::{FundchannelRequest, PayRequest};
 use cln_rpc::primitives::{Amount, AmountOrAll};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::collections::HashSet;
 use tokio::sync::Mutex;
 
@@ -25,8 +25,8 @@ struct AppState {
 const REQUESTCHANNELTAG: &str = "channelRequest";
 const WITHDRAWCHANNELTAG: &str = "withdrawRequest";
 const DEFAULT_DESCRIPTION: &str = "Withdrawal from service";
-const IP_ADDRESS: &str = "127.0.0.1:49735";
-const CALLBACK_URL: &str = "http://192.168.1.44:3000/";
+const IP_ADDRESS: &str = "192.168.27.70:49735";
+const CALLBACK_URL: &str = "http://192.168.27.70:3000/";
 
 static NODE_URI: OnceLock<String> = OnceLock::new();
 
@@ -234,12 +234,76 @@ async fn withdraw(
     State(state): State<AppState>,
     Query(params): Query<WithdrawParams>,
 ) -> (StatusCode, Json<WithdrawResponse>) {
-    unimplemented!()
+    println!("Withdraw request received");
+    println!("Params: {:?}", params);
+    // Check if k1 exists in HashSet
+    let k1_valid = {
+        let k1_store = state.k1_store.lock().await;
+        k1_store.contains(&params.k1)
+    };
+    
+    if !k1_valid {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(WithdrawResponse {
+                status: "ERROR".to_string(),
+                reason: Some("Invalid k1".to_string()),
+            }),
+        );
+    }
+
+    let request = PayRequest {
+        bolt11: params.pr,
+        amount_msat: None,
+        label: None,
+        riskfactor: None,
+        maxfeepercent: None,
+        retry_for: None,
+        maxdelay: None,
+        exemptfee: None,
+        localinvreqid: None,
+        exclude: None,
+        maxfee: None,
+        description: None,
+        partial_msat: None,
+    };
+
+    let mut client_guard = state.client.lock().await;
+    match client_guard.call(cln_rpc::Request::Pay(request)).await {
+        Ok(cln_rpc::Response::Pay(response)) => {
+            println!("Payment successful: {:?}", response.payment_hash);
+            (
+                StatusCode::OK,
+                Json(WithdrawResponse {
+                    status: "OK".to_string(),
+                    reason: None,
+                }),
+            )
+        }
+        Ok(_) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WithdrawResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some("Unexpected response type".to_string()),
+                }),
+            )
+        }
+        Err(e) => {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WithdrawResponse {
+                    status: "ERROR".to_string(),
+                    reason: Some(format!("Failed to pay invoice: {}", e)),
+                }),
+            )
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let client = match cln_rpc::ClnRpc::new("/home/sosthene/.lightning/testnet4/lightning-rpc").await {
+    let client = match cln_rpc::ClnRpc::new("/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc").await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to connect to cln rpc: {}", e);
