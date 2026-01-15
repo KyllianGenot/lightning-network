@@ -1,86 +1,163 @@
-//! CLI for LNURL channel and withdraw protocols.
-//!
-//! Implements LNURL-channel and LNURL-withdraw protocols,
-//! communicating with a Core Lightning node via `lightning-cli`.
-
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tracing::{debug, error, info};
+use cln_rpc::ClnRpc;
+use url::Url;
+use anyhow::{Context, Result, anyhow};
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
+use secp256k1::PublicKey;
 
-// ============================================================================
-// Constants
-// ============================================================================
+const CLN_RPC_PATH: &str = "/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc";
 
-const DEFAULT_CLI_PATH: &str = "lightning-cli";
-const DEFAULT_WITHDRAW_DESCRIPTION: &str = "LNURL withdrawal";
-const INVOICE_LABEL_PREFIX: &str = "lnurl-withdraw";
-const STATUS_OK: &str = "OK";
-
-// ============================================================================
-// CLI Configuration
-// ============================================================================
-
-#[derive(Parser)]
-#[command(name = "lnurl-client")]
-#[command(version, about = "CLI for LNURL channel and withdraw protocols")]
-struct Cli {
-    /// Enable verbose logging
-    #[arg(short, long, global = true)]
-    verbose: bool,
-
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
+#[derive(Debug)]
 enum Commands {
-    /// Request a channel from an LNURL server
-    ChannelRequest {
-        /// Server URL (e.g., http://localhost:3000)
-        server: String,
-
-        /// Path to lightning-cli binary
-        #[arg(long, default_value = DEFAULT_CLI_PATH)]
-        cli_path: String,
-
-        /// Bitcoin network (e.g., testnet, signet)
-        #[arg(long)]
-        network: Option<String>,
+    RequestChannel {
+        url: Url,
     },
-
-    /// Request a withdrawal from an LNURL server
-    WithdrawRequest {
-        /// Server URL (e.g., http://localhost:3000)
-        server: String,
-
-        /// Amount to withdraw in millisatoshis
-        amount_msat: u64,
-
-        /// Invoice description
-        #[arg(long, default_value = DEFAULT_WITHDRAW_DESCRIPTION)]
-        description: String,
-
-        /// Path to lightning-cli binary
-        #[arg(long, default_value = DEFAULT_CLI_PATH)]
-        cli_path: String,
-
-        /// Bitcoin network (e.g., testnet, signet)
-        #[arg(long)]
-        network: Option<String>,
-    },
+    RequestWithdraw {
+        url: Url,
+        amount: u32,
+    }
 }
 
-// ============================================================================
-// API Response Types
-// ============================================================================
+fn print_usage() {
+    eprintln!("Usage:");
+    eprintln!("  lnurl-client request-channel <url|ip> ");
+}
 
-/// Response from LNURL-channel initial request.
+fn parse_url_or_ip(input: &str) -> Result<Url> {
+    // First try parsing as a URL
+    if let Ok(url) = Url::parse(input) {
+        return Ok(url);
+    }
+    
+    // Handle IPv6 with port in brackets format: [::1]:8080
+    if let Some(bracket_end) = input.find("]:") {
+        if input.starts_with('[') {
+            let ip_part = &input[1..bracket_end];
+            let port_part = &input[bracket_end + 2..];
+            if port_part.parse::<u16>().is_ok() {
+                if let Ok(ip) = IpAddr::from_str(ip_part) {
+                    let url_str = format!("http://[{}]:{}", ip, port_part);
+                    return Url::parse(&url_str)
+                        .context("Failed to convert IP address with port to URL");
+                }
+            }
+        }
+    }
+    
+    // Try parsing as IP address with port: 192.168.1.1:8080 or ::1:8080
+    if let Some(colon_pos) = input.rfind(':') {
+        let ip_part = &input[..colon_pos];
+        let port_part = &input[colon_pos + 1..];
+        
+        if port_part.parse::<u16>().is_ok() {
+            if let Ok(ip) = IpAddr::from_str(ip_part) {
+                let url_str = format!("http://{}:{}", ip, port_part);
+                return Url::parse(&url_str)
+                    .context("Failed to convert IP address with port to URL");
+            }
+        }
+    }
+    
+    // Try parsing as plain IP address (no port) - IpAddr::from_str handles both IPv4 and IPv6
+    if let Ok(ip) = IpAddr::from_str(input) {
+        let url_str = format!("http://{}", ip);
+        return Url::parse(&url_str)
+            .context("Failed to convert IP address to URL");
+    }
+    
+    Err(anyhow!("Invalid URL or IP address: {}", input))
+}
+
+fn parse_args() -> Result<Commands> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() < 2 {
+        print_usage();
+        return Err(anyhow!("No command provided"));
+    }
+
+    let command_name = args[1].as_str();
+    
+    match command_name {
+        "request-channel" => {
+            if args.len() < 3 {
+                return Err(anyhow!("request-channel requires a <url> argument"));
+            } else if args.len() > 3 {
+                return Err(anyhow!("request-channel does not accept additional arguments"));
+            }
+            
+            let url = parse_url_or_ip(&args[2])?;
+
+            Ok(Commands::RequestChannel {
+                url,
+            })
+        } 
+        "request-withdraw" => {
+            if args.len() < 4 {
+                return Err(anyhow!("request-withdraw requires a <url> and <amount> arguments"));
+            } else if args.len() > 4 {
+                return Err(anyhow!("request-withdraw does not accept additional arguments"));
+            }
+            
+            let url = parse_url_or_ip(&args[2])?;
+            let amount: u32 = args[3].trim().parse()?;
+
+            Ok(Commands::RequestWithdraw {
+                url,
+                amount,
+            })
+        },
+        _ => {
+            print_usage();
+            Err(anyhow!("Unknown command: {}", command_name))
+        }
+    }
+}
+
+fn get_node_uri(ln_client: &mut ClnRpc, rt: &tokio::runtime::Runtime) -> Result<String> {
+    let node_info = rt.block_on(ln_client.call(cln_rpc::Request::Getinfo(cln_rpc::model::requests::GetinfoRequest{})));
+    let node_uri = match node_info {
+        Ok(cln_rpc::model::Response::Getinfo(response)) => {
+            let pubkey = response.id.to_string();
+            println!("Node pubkey initialized: {}", pubkey);
+            format!("{}@{}", pubkey, "127.0.0.1:49735")
+        }
+        Err(e) => {
+            return Err(anyhow!("Failed to get node info: {}", e));
+        }
+        _ => {
+            return Err(anyhow!("Unexpected response type"));
+        }
+    };
+
+    Ok(node_uri)
+}
+
+fn connect_to_node(ln_client: &mut ClnRpc, rt: &tokio::runtime::Runtime, node_uri: &str) -> Result<()> {
+    let parsed = node_uri.split('@').collect::<Vec<&str>>();
+    if parsed.len() != 2 {
+        return Err(anyhow!("Invalid node URI: {}", node_uri));
+    }
+    let pubkey = PublicKey::from_str(parsed[0])?;
+    let host = parsed[1];
+    let port = host.split(':').collect::<Vec<&str>>()[1];
+    let ip_addr: Ipv4Addr = host.split(':').collect::<Vec<&str>>()[0].parse()?;
+
+    println!("Connecting to node {}@{}:{}...", pubkey, ip_addr, port);
+    let request = cln_rpc::model::requests::ConnectRequest{
+        id: pubkey.to_string(),
+        host: Some(ip_addr.to_string()),
+        port: port.parse::<u16>().ok(),
+    };
+
+    let _response = rt.block_on(ln_client.call(cln_rpc::Request::Connect(request)))?;
+
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ChannelRequestResponse {
     uri: String,
     callback: String,
@@ -88,20 +165,6 @@ struct ChannelRequestResponse {
     tag: String,
 }
 
-/// Response from LNURL-withdraw initial request.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct WithdrawRequestResponse {
-    callback: String,
-    k1: String,
-    tag: String,
-    default_description: String,
-    min_withdrawable: u64,
-    max_withdrawable: u64,
-}
-
-/// Response from channel open callback.
 #[derive(Debug, Deserialize)]
 struct ChannelOpenResponse {
     status: String,
@@ -110,269 +173,85 @@ struct ChannelOpenResponse {
     channel_id: Option<String>,
 }
 
-/// Response from withdraw callback.
-#[derive(Debug, Deserialize)]
-struct WithdrawResponse {
-    status: String,
-    reason: Option<String>,
-}
+fn channel_request(url: &Url) -> Result<()> {
+    println!("Requesting channel info from {}...", url);
 
-/// Response from lightning-cli getinfo.
-#[derive(Debug, Deserialize)]
-struct GetInfoResponse {
-    id: String,
-}
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .context("Failed to create Tokio runtime")?;
+    let mut ln_client = rt.block_on(cln_rpc::ClnRpc::new(CLN_RPC_PATH))?;
 
-/// Response from lightning-cli invoice.
-#[derive(Debug, Deserialize)]
-struct InvoiceResponse {
-    bolt11: String,
-}
+    let mut node_uri = get_node_uri(&mut ln_client, &rt)?;
 
-// ============================================================================
-// Lightning CLI Helpers
-// ============================================================================
+    println!("Node URI: {}", node_uri);
 
-/// Builds a lightning-cli command with optional network flag.
-fn build_cli_command(cli_path: &str, network: Option<&str>) -> Command {
-    let mut cmd = Command::new(cli_path);
-    if let Some(net) = network {
-        cmd.arg(format!("--network={net}"));
-    }
-    cmd
-}
+    let request_url = format!("{}/request-channel", url.as_str().trim_end_matches('/'));
+    let resp: ChannelRequestResponse = ureq::get(&request_url).call()?.into_json()?;
+    
+    println!("Received channel request:");
+    println!("  URI: {}", resp.uri);
+    println!("  Callback: {}", resp.callback);
+    println!("  k1: {}", resp.k1);
 
-/// Executes a lightning-cli command and returns the output.
-fn execute_cli_command(mut cmd: Command) -> Result<Vec<u8>> {
-    let output = cmd.output().context("Failed to execute lightning-cli")?;
+    connect_to_node(&mut ln_client, &rt, &resp.uri)?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Command failed: {stderr}");
-    }
-
-    Ok(output.stdout)
-}
-
-/// Retrieves the local node ID from the Lightning node.
-fn get_local_node_id(cli_path: &str, network: Option<&str>) -> Result<String> {
-    let mut cmd = build_cli_command(cli_path, network);
-    cmd.arg("getinfo");
-
-    let output = execute_cli_command(cmd).context("getinfo failed")?;
-    let info: GetInfoResponse = serde_json::from_slice(&output)?;
-
-    Ok(info.id)
-}
-
-/// Connects to a remote Lightning node.
-fn connect_to_peer(cli_path: &str, network: Option<&str>, uri: &str) -> Result<()> {
-    info!(uri, "Connecting to peer");
-
-    let mut cmd = build_cli_command(cli_path, network);
-    cmd.args(["connect", uri]);
-
-    match execute_cli_command(cmd) {
-        Ok(_) => {
-            info!("Successfully connected to peer");
-            Ok(())
-        }
-        Err(e) => {
-            let error_msg = e.to_string();
-            if error_msg.contains("already connected") {
-                debug!("Already connected to peer");
-                Ok(())
-            } else {
-                Err(e).context("Failed to connect to peer")
-            }
-        }
-    }
-}
-
-/// Creates a Lightning invoice for receiving payment.
-fn create_invoice(
-    cli_path: &str,
-    network: Option<&str>,
-    amount_msat: u64,
-    description: &str,
-) -> Result<String> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("System time error")?
-        .as_millis();
-    let label = format!("{INVOICE_LABEL_PREFIX}-{timestamp}");
-
-    let mut cmd = build_cli_command(cli_path, network);
-    cmd.args(["invoice", &format!("{amount_msat}msat"), &label, description]);
-
-    let output = execute_cli_command(cmd).context("Invoice creation failed")?;
-    let response: InvoiceResponse = serde_json::from_slice(&output)?;
-
-    Ok(response.bolt11)
-}
-
-// ============================================================================
-// LNURL Protocol Handlers
-// ============================================================================
-
-/// Handles LNURL-channel flow: requests channel info and initiates channel opening.
-async fn handle_channel_request(server: &str, cli_path: &str, network: Option<&str>) -> Result<()> {
-    let client = reqwest::Client::new();
-    let base_url = server.trim_end_matches('/');
-
-    // Step 1: Get channel request info
-    info!(server, "Requesting channel info");
-    let url = format!("{base_url}/channel_request");
-    let response: ChannelRequestResponse = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to reach server")?
-        .json()
-        .await
-        .context("Invalid response format")?;
-
-    debug!(uri = %response.uri, callback = %response.callback, "Received channel request");
-
-    // Step 2: Connect to the remote node
-    connect_to_peer(cli_path, network, &response.uri)?;
-
-    // Step 3: Get local node ID
-    let local_node_id = get_local_node_id(cli_path, network)?;
-    debug!(node_id = %local_node_id, "Retrieved local node ID");
-
-    // Step 4: Request channel opening
-    info!("Requesting channel open");
-    let open_url = format!("{base_url}/open_channel?remoteid={local_node_id}&k1={}", response.k1);
-
-    let open_response: ChannelOpenResponse = client
-        .get(&open_url)
-        .send()
-        .await
-        .context("Channel open request failed")?
-        .json()
-        .await
-        .context("Invalid channel open response")?;
-
-    if open_response.status == STATUS_OK {
-        info!("Channel opened successfully");
-        if let Some(txid) = &open_response.txid {
-            info!(txid, "Funding transaction");
-        }
-        if let Some(channel_id) = &open_response.channel_id {
-            info!(channel_id, "Channel ID");
-        }
-    } else {
-        let reason = open_response.reason.unwrap_or_default();
-        error!(reason, "Channel open failed");
-        bail!("Channel open failed: {reason}");
-    }
-
-    Ok(())
-}
-
-/// Handles LNURL-withdraw flow: requests withdrawal info and submits invoice for payment.
-async fn handle_withdraw_request(
-    server: &str,
-    amount_msat: u64,
-    description: &str,
-    cli_path: &str,
-    network: Option<&str>,
-) -> Result<()> {
-    let client = reqwest::Client::new();
-    let base_url = server.trim_end_matches('/');
-
-    // Step 1: Get withdrawal request info
-    info!(server, "Requesting withdrawal info");
-    let url = format!("{base_url}/withdraw_request");
-    let response: WithdrawRequestResponse = client
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to reach server")?
-        .json()
-        .await
-        .context("Invalid response format")?;
-
-    debug!(
-        min = response.min_withdrawable,
-        max = response.max_withdrawable,
-        "Withdrawal limits"
+    println!("Requesting channel open...");
+    
+    let _ = node_uri.split_off(secp256k1::constants::PUBLIC_KEY_SIZE * 2); // it will panic if the string is less than 33 bytes long
+    let open_url = format!(
+        "{}?remoteid={}&k1={}",
+        resp.callback,
+        node_uri,
+        resp.k1
     );
-
-    // Step 2: Validate amount
-    if amount_msat < response.min_withdrawable || amount_msat > response.max_withdrawable {
-        bail!(
-            "Amount {amount_msat} msat outside allowed range [{}, {}]",
-            response.min_withdrawable,
-            response.max_withdrawable
-        );
+    println!("Open URL: {}", open_url);
+    
+    let open_resp = match ureq::get(&open_url).call() {
+        Ok(resp) => resp.into_json::<ChannelOpenResponse>()?,
+        Err(e) => {
+            return Err(anyhow!("Failed to open channel: {}", e));
+        }
+    };
+    println!("Open response: {:?}", open_resp);
+     
+    println!("Channel opened successfully!");
+    if let Some(txid) = open_resp.txid {
+        println!("  Transaction ID: {}", txid);
     }
-
-    // Step 3: Create invoice
-    info!(amount_msat, "Creating invoice");
-    let bolt11 = create_invoice(cli_path, network, amount_msat, description)?;
-    debug!(invoice_preview = &bolt11[..bolt11.len().min(50)], "Invoice created");
-
-    // Step 4: Submit withdrawal request
-    info!("Submitting withdrawal request");
-    let withdraw_url = format!("{base_url}/withdraw?k1={}&pr={bolt11}", response.k1);
-
-    let withdraw_response: WithdrawResponse = client
-        .get(&withdraw_url)
-        .send()
-        .await
-        .context("Withdrawal request failed")?
-        .json()
-        .await
-        .context("Invalid withdrawal response")?;
-
-    if withdraw_response.status == STATUS_OK {
-        info!("Withdrawal successful");
-    } else {
-        let reason = withdraw_response.reason.unwrap_or_default();
-        error!(reason, "Withdrawal failed");
-        bail!("Withdrawal failed: {reason}");
+    if let Some(channel_id) = open_resp.channel_id {
+        println!("  Channel ID: {}", channel_id);
     }
 
     Ok(())
 }
 
-// ============================================================================
-// Entry Point
-// ============================================================================
+fn withdraw_request(url: &Url, amount: u32) -> Result<()> {
+    unimplemented!()
+}
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-
-    // Initialize tracing
-    let log_level = if cli.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
-
-    let result = match cli.command {
-        Commands::ChannelRequest {
-            server,
-            cli_path,
-            network,
-        } => handle_channel_request(&server, &cli_path, network.as_deref()).await,
-
-        Commands::WithdrawRequest {
-            server,
-            amount_msat,
-            description,
-            cli_path,
-            network,
-        } => {
-            handle_withdraw_request(&server, amount_msat, &description, &cli_path, network.as_deref())
-                .await
+fn main() {
+    let command = match parse_args() {
+        Ok(command) => command,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
         }
+    };
+ 
+
+    let result = match command {
+        Commands::RequestChannel { url } => {
+            channel_request(&url)
+        }
+        Commands::RequestWithdraw { url, amount } => {
+            withdraw_request(&url, amount)
+        }
+        _ => unreachable!()
     };
 
     if let Err(e) = result {
-        error!("{e:#}");
+        eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }

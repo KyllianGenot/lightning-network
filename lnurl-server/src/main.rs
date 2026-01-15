@@ -419,9 +419,9 @@ async fn main() {
 
     // Build router
     let app = Router::new()
-        .route("/channel_request", get(handle_channel_request))
-        .route("/open_channel", get(handle_open_channel))
-        .route("/withdraw_request", get(handle_withdraw_request))
+        .route("/request-channel", get(handle_channel_request))
+        .route("/open-channel", get(handle_open_channel))
+        .route("/request-withdraw", get(handle_withdraw_request))
         .route("/withdraw", get(handle_withdraw))
         .with_state(state);
 
