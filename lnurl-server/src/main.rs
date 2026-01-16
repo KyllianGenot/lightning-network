@@ -134,6 +134,7 @@ async fn open_channel(
     let amount = AmountOrAll::Amount(Amount::from_sat(100_000));
     let announce = params.private;
 
+    // Single lock acquisition for the entire CLN interaction
     let mut client_guard = state.client.lock().await;
 
     // Connect to peer first if address provided
@@ -172,8 +173,7 @@ async fn open_channel(
         channel_type: None,
     };
 
-    
-    let mut client_guard = state.client.lock().await;
+    // Use the same client_guard - no duplicate lock acquisition
     match client_guard.call(cln_rpc::Request::FundChannel(request)).await {
         Ok(cln_rpc::Response::FundChannel(response)) => {
             (

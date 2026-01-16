@@ -1,0 +1,76 @@
+# LNURL Server & Client
+
+## Setup
+
+1. Update the CLN RPC path in both files to match your setup:
+   - `lnurl-server/src/main.rs` - line in `main()`
+   - `lnurl-client/src/main.rs` - `CLN_RPC_PATH` constant
+
+2. Update your IP address in `lnurl-server/src/main.rs`:
+   ```rust
+   const IP_ADDRESS: &str = "192.168.27.70:49735";
+   const CALLBACK_URL: &str = "http://192.168.27.70:3000/";
+   ```
+
+3. Copy and configure environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Edit `.env` with your values:
+   ```bash
+   # CLN RPC socket path
+   export CLN_RPC_PATH=/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc
+
+   # Server binding
+   export HOST=0.0.0.0
+   export PORT=3000
+
+   # Node identity
+   export NODE_PUBKEY=your_node_public_key_here
+   export NODE_ADDRESS=192.168.27.70:49735
+   ```
+
+5. Load environment:
+   ```bash
+   source .env
+   ```
+
+6. Build:
+   ```bash
+   cargo build --release
+   ```
+
+## Running the Server
+
+```bash
+./target/release/lnurl-server
+```
+
+## Client Commands
+
+```bash
+# LNURL-Auth
+./target/release/lnurl-client request-auth <server-ip>:3000
+
+# LNURL-Withdraw (amount in millisatoshis)
+./target/release/lnurl-client request-withdraw <server-ip>:3000 10000
+
+# LNURL-Channel (requires two different nodes)
+./target/release/lnurl-client request-channel <server-ip>:3000
+```
+
+## Testing Locally
+
+```bash
+# Start server
+./target/release/lnurl-server
+
+# In another terminal - test auth
+./target/release/lnurl-client request-auth 192.168.27.70:3000
+
+# Test withdraw
+./target/release/lnurl-client request-withdraw 192.168.27.70:3000 10000
+```
+
+**Note:** `request-channel` requires two different Lightning nodes to work properly.
