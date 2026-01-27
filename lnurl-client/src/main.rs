@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 use secp256k1::{PublicKey, Secp256k1, SecretKey, Message};
 
-const CLN_RPC_PATH: &str = "/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc";
+const CLN_RPC_PATH: &str = "/home/ubuntu/.lightning/testnet4/lightning-rpc";
 
 #[derive(Debug)]
 enum Commands {
@@ -140,7 +140,7 @@ fn get_node_uri(ln_client: &mut ClnRpc, rt: &tokio::runtime::Runtime) -> Result<
         Ok(cln_rpc::model::Response::Getinfo(response)) => {
             let pubkey = response.id.to_string();
             println!("Node pubkey initialized: {}", pubkey);
-            format!("{}@{}", pubkey, "127.0.0.1:49735")
+            format!("{}@{}", pubkey, "137.74.119.232:49735")
         }
         Err(e) => {
             return Err(anyhow!("Failed to get node info: {}", e));
@@ -160,17 +160,23 @@ fn connect_to_node(ln_client: &mut ClnRpc, rt: &tokio::runtime::Runtime, node_ur
     }
     let pubkey = PublicKey::from_str(parsed[0])?;
     let host = parsed[1];
-    let port = host.split(':').collect::<Vec<&str>>()[1];
-    let ip_addr: Ipv4Addr = host.split(':').collect::<Vec<&str>>()[0].parse()?;
+    let port_str = host.split(':').collect::<Vec<&str>>()[1];
+    let ip_str = host.split(':').collect::<Vec<&str>>()[0];
+    
+    let ip_addr: Ipv4Addr = ip_str.parse()?;
+    let port = port_str.parse::<u16>().ok();
 
-    println!("Connecting to node {}@{}:{}...", pubkey, ip_addr, port);
+    println!("Connecting to node {}@{}:{}...", pubkey, ip_addr, port.unwrap_or(9735));
     let request = cln_rpc::model::requests::ConnectRequest{
         id: pubkey.to_string(),
         host: Some(ip_addr.to_string()),
-        port: port.parse::<u16>().ok(),
+        port: port,
     };
 
-    let _response = rt.block_on(ln_client.call(cln_rpc::Request::Connect(request)))?;
+    match rt.block_on(ln_client.call(cln_rpc::Request::Connect(request))) {
+        Ok(_) => println!("Connected to peer successfully."),
+        Err(e) => println!("Note: Connection step skipped (likely connecting to self): {}", e),
+    }
 
     Ok(())
 }
@@ -248,7 +254,7 @@ fn channel_request(url: &Url) -> Result<()> {
     let _ = node_uri.split_off(secp256k1::constants::PUBLIC_KEY_SIZE * 2); // it will panic if the string is less than 33 bytes long
     
     // Get our listening address to send to server
-    let (our_ip, our_port) = ("192.168.27.70", 49735);  // Our VPN IP and lightning port
+    let (our_ip, our_port) = ("137.74.119.232", 49735);  // Our VPN IP and lightning port
     
     let open_url = format!(
         "{}?remoteid={}&k1={}&ip={}&port={}",

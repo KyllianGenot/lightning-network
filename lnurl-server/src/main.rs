@@ -28,8 +28,8 @@ const REQUESTCHANNELTAG: &str = "channelRequest";
 const WITHDRAWCHANNELTAG: &str = "withdrawRequest";
 const LOGINTAG: &str = "login";
 const DEFAULT_DESCRIPTION: &str = "Withdrawal from service";
-const IP_ADDRESS: &str = "192.168.27.70:49735";
-const CALLBACK_URL: &str = "http://192.168.27.70:3000/";
+const IP_ADDRESS: &str = "137.74.119.232:49735";
+const CALLBACK_URL: &str = "http://137.74.119.232:3000/";
 
 static NODE_URI: OnceLock<String> = OnceLock::new();
 
@@ -522,7 +522,7 @@ async fn verify_auth(
 
 #[tokio::main]
 async fn main() {
-    let client = match cln_rpc::ClnRpc::new("/Users/kyllian/.lightning/testnet4/testnet4/lightning-rpc").await {
+    let client = match cln_rpc::ClnRpc::new("/home/ubuntu/.lightning/testnet4/lightning-rpc").await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to connect to cln rpc: {}", e);
