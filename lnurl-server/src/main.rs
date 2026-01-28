@@ -6,7 +6,7 @@ use axum::{
 };
 use cln_rpc::{self, primitives::Sha256};
 use cln_rpc::model::requests::{FundchannelRequest, PayRequest};
-use cln_rpc::primitives::{Amount, AmountOrAll};
+use cln_rpc::primitives::{Amount, AmountOrAll, Feerate};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::sync::{Arc, OnceLock};
@@ -136,32 +136,12 @@ async fn open_channel(
 
     // Single lock acquisition for the entire CLN interaction
     let mut client_guard = state.client.lock().await;
-
-    // Connect to peer first if address provided
-    if let (Some(ip), Some(port)) = (&params.ip, params.port) {
-        println!("Connecting to peer {}@{}:{}...", params.remoteid, ip, port);
-        let connect_request = cln_rpc::model::requests::ConnectRequest {
-            id: params.remoteid.clone(),
-            host: Some(ip.clone()),
-            port: Some(port),
-        };
-        match client_guard.call(cln_rpc::Request::Connect(connect_request)).await {
-            Ok(_) => println!("Connected to peer"),
-            Err(e) => {
-                // Ignore "already connected" errors
-                let err_str = format!("{}", e);
-                if !err_str.contains("already connected") {
-                    println!("Connect warning: {}", e);
-                }
-            }
-        }
-    }
     
     let request = FundchannelRequest {
         id: node_id,
         amount,
         announce: announce,
-        feerate: None,
+        feerate: Some(Feerate::Urgent),
         minconf: None,
         mindepth: None,
         utxos: None,
@@ -181,7 +161,7 @@ async fn open_channel(
                 Json(OpenChannelResponse {
                     status: "OK".to_string(),
                     reason: None,
-                    mindepth: Some(response.mindepth.unwrap()),
+                    mindepth: response.mindepth,
                     channel_id: Some(response.channel_id),
                     outnum: Some(response.outnum),
                     tx: Some(response.tx),
