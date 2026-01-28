@@ -48,7 +48,7 @@ sudo journalctl -u lnurl-server -f
 2. `CLN_RPC_PATH` updated in `lnurl-client/src/main.rs`.
 3. Rust (`cargo`) installed.
 
-### A. Interoperability Test (Request Channel)
+### A. Request Channel
 
 Requests the public server to open a channel to your local node.
 
