@@ -1,6 +1,6 @@
 # LNURL Rust Project
 
-A Rust implementation of the LNURL protocol (LUD-01, LUD-03, LUD-04) on Bitcoin Testnet4, interacting with Core Lightning (CLN).
+A Rust implementation of the LNURL protocol on Bitcoin Testnet4, interacting with Core Lightning.
 
 ## 🌍 Public Server Info
 
