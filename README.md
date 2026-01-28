@@ -1,74 +1,73 @@
-# LNURL Server & Client
+# LNURL Rust Project
 
-A Rust implementation for LNURL (Channel, Withdraw, Auth) on Bitcoin Testnet4.
+A Rust implementation of the LNURL protocol (LUD-01, LUD-03, LUD-04) on Bitcoin Testnet4, interacting with Core Lightning (CLN).
 
-* **Server URL:** `http://137.74.119.232:3000`
-* **Node URI:** `0291130cecc90ab7c3d0943490136c548e73578fc311a3431cc9534ab8394ed275@137.74.119.232:49735`
+## 🌍 Public Server Info
 
-## 1. Configuration
+**The server is deployed publicly and is fully accessible for testing by anyone.** You do not need to run the server locally, and you do not need to connect through the WireGuard VPN to test the client.
 
-The configuration is hardcoded in the source files. Update with your own informations.
-
-* **Server Config (`lnurl-server/src/main.rs`):**
-* IP Address: `137.74.119.232:49735`
-* Callback URL: `http://137.74.119.232:3000/`
-* CLN RPC Path: `/home/ubuntu/.lightning/testnet4/lightning-rpc`
-
-* **Client Config (`lnurl-client/src/main.rs`):**
-* Public IP: `137.74.119.232`
-* CLN RPC Path: `/home/ubuntu/.lightning/testnet4/lightning-rpc`
+* **Server Base URL:** `http://137.74.119.232:3000`
+* **Lightning Node URI:** `0291130cecc90ab7c3d0943490136c548e73578fc311a3431cc9534ab8394ed275@137.74.119.232:49735`
 
 ---
 
-## 2. Starting the Server
+## 1. Project Configuration
 
-The server is already configured to run as a system service.
+Configuration is currently defined in the source files.
+
+* **Server (`lnurl-server/src/main.rs`):**
+* Listens on: `0.0.0.0:3000` (Public Internet)
+* CLN RPC: `/home/ubuntu/.lightning/testnet4/lightning-rpc`
+
+
+* **Client (`lnurl-client/src/main.rs`):**
+* **Note:** If running the client locally, you **must** update the `CLN_RPC_PATH` constant in `main.rs` to point to your local CLN `lightning-rpc` file.
+* Public IP: Updated to match the client's listening address.
+
+---
+
+## 2. Server Status
+
+The server is running as a systemd service on a public VPS.
 
 ```bash
-# Check status and view logs
+# Check service status on VPS
 sudo systemctl status lnurl-server
+
+# View live logs
 sudo journalctl -u lnurl-server -f
-
-# Manual start (alternative)
-cd lnurl-server
-cargo run --release
-
 ```
 
 ---
 
-## 3. Running Tests (Client)
+## 3. Running the Client (Tests)
 
-To verify the functionalities, run these commands from the `lnurl-client` directory.
+**Prerequisites:**
+
+1. A running Core Lightning (CLN) node on Testnet4.
+2. `CLN_RPC_PATH` updated in `lnurl-client/src/main.rs`.
+3. Rust (`cargo`) installed.
+
+### A. Interoperability Test (Request Channel)
+
+Requests the public server to open a channel to your local node.
 
 ```bash
-cd lnurl-client
-
-```
-
-### A. Interoperability Test
-
-Request a channel from my server.
-
-```bash
-cargo run -- request-channel http://137.74.119.232:3000
-
+cargo run --bin lnurl-client -- request-channel http://137.74.119.232:3000
 ```
 
 ### B. Withdraw Test
 
-Request a 1 sat (1000 msat) payment from my server.
+Requests the public server to pay an invoice (1000 msat) to your node.
 
 ```bash
-cargo run -- request-withdraw http://137.74.119.232:3000 1000
-
+cargo run --bin lnurl-client -- request-withdraw http://137.74.119.232:3000 1000
 ```
 
 ### C. Auth Test
 
-Perform an LNURL-Auth (LUD-04) cryptographic login.
+Performs a cryptographic handshake/login with the server.
 
 ```bash
-cargo run -- request-auth http://137.74.119.232:3000
-
+cargo run --bin lnurl-client -- request-auth http://137.74.119.232:3000
 ```
