@@ -7,19 +7,16 @@ A Rust implementation for LNURL (Channel, Withdraw, Auth) on Bitcoin Testnet4.
 
 ## 1. Configuration
 
-The configuration is hardcoded in the source files for simplicity.
+The configuration is hardcoded in the source files. Update with your own informations.
 
 * **Server Config (`lnurl-server/src/main.rs`):**
 * IP Address: `137.74.119.232:49735`
 * Callback URL: `http://137.74.119.232:3000/`
 * CLN RPC Path: `/home/ubuntu/.lightning/testnet4/lightning-rpc`
 
-
 * **Client Config (`lnurl-client/src/main.rs`):**
 * Public IP: `137.74.119.232`
 * CLN RPC Path: `/home/ubuntu/.lightning/testnet4/lightning-rpc`
-
-
 
 ---
 
@@ -51,24 +48,14 @@ cd lnurl-client
 
 ### A. Interoperability Test
 
-Request a channel from an external server (e.g., Professor's Node) to prove the client works.
-
-```bash
-cargo run -- request-channel http://82.67.177.113:3001
-
-```
-
-### B. Self-Test (My Server)
-
-Request a channel from my own server.
-*Note: The final connection step will skip because the node cannot connect to itself, proving the handshake works.*
+Request a channel from my server.
 
 ```bash
 cargo run -- request-channel http://137.74.119.232:3000
 
 ```
 
-### C. Withdraw Test
+### B. Withdraw Test
 
 Request a 1 sat (1000 msat) payment from my server.
 
@@ -77,7 +64,7 @@ cargo run -- request-withdraw http://137.74.119.232:3000 1000
 
 ```
 
-### D. Auth Test
+### C. Auth Test
 
 Perform an LNURL-Auth (LUD-04) cryptographic login.
 

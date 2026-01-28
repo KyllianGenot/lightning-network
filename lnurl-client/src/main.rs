@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 use secp256k1::{PublicKey, Secp256k1, SecretKey, Message};
 
-const CLN_RPC_PATH: &str = "/home/ubuntu/.lightning/testnet4/lightning-rpc";
+const CLN_RPC_PATH: &str = "/Users/kyllian/.lightning/testnet4/lightning-rpc";
 
 #[derive(Debug)]
 enum Commands {
@@ -253,8 +253,7 @@ fn channel_request(url: &Url) -> Result<()> {
     
     let _ = node_uri.split_off(secp256k1::constants::PUBLIC_KEY_SIZE * 2); // it will panic if the string is less than 33 bytes long
     
-    // Get our listening address to send to server
-    let (our_ip, our_port) = ("137.74.119.232", 49735);  // Our VPN IP and lightning port
+    let (our_ip, our_port) = ("169.155.254.176", 49735);
     
     let open_url = format!(
         "{}?remoteid={}&k1={}&ip={}&port={}",
