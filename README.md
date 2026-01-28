@@ -72,6 +72,8 @@ Performs a cryptographic handshake/login with the server.
 cargo run --bin lnurl-client -- request-auth http://137.74.119.232:3000
 ```
 
+---
+
 ## 4. Screenshots from the client calling the server running at 82.67.177.113:3001
 
 ### A. Request a channel
